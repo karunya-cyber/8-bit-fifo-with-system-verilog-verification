@@ -1,0 +1,194 @@
+interface fifo_if(input logic clk);
+  logic       rst;
+  logic [7:0] din;
+  logic       w;
+  logic       r;
+  logic [7:0] d;
+  logic       full;
+  logic       empty;
+
+  clocking cb @(posedge clk);
+    default input #1ns output #1ns; // step up time and hold time
+    inout din, w, r;
+    input d, full, empty;
+  endclocking
+
+  modport TB (clocking cb, output rst);
+endinterface
+
+class transaction;
+  rand bit [7:0] din;
+  rand bit w;
+  rand bit r;
+  bit [7:0] d;
+
+  constraint c1 {
+    w dist {1 := 50, 0 := 50};
+    r dist {1 := 50, 0 := 50};
+  }
+endclass
+
+class generator;
+  transaction tr;
+  mailbox gtd;
+
+  function new(mailbox gtd);
+    this.gtd = gtd;
+  endfunction
+
+  task ru();
+    repeat(10) begin
+      tr = new();
+      tr.randomize();
+      $display("genrator: din=%0d,w=%0b,r=%0b", tr.din, tr.w, tr.r);
+      gtd.put(tr);
+    end
+  endtask
+endclass
+
+class driver;
+  transaction tr;
+  mailbox gtd;
+  virtual fifo_if.TB vif;
+
+  function new(mailbox gtd, virtual fifo_if.TB vif);
+    this.gtd = gtd;
+    this.vif = vif;
+  endfunction
+
+  task ru();
+    $display("from diver");
+    forever begin
+      gtd.get(tr);
+
+      @(vif.cb);
+      vif.cb.din <= tr.din;
+      vif.cb.w   <= tr.w;
+      vif.cb.r   <= tr.r;
+      $display("din=%0d,w=%0b,r=%0b", tr.din, tr.w, tr.r);
+
+      @(vif.cb);
+      vif.cb.w <= 0;
+      vif.cb.r <= 0;
+    end
+  endtask
+endclass
+
+class monitor;
+  transaction tr;
+  mailbox mts;
+  virtual fifo_if.TB vif;
+
+  function new(mailbox mts, virtual fifo_if.TB vif);
+    this.mts = mts;
+    this.vif = vif;
+  endfunction
+
+  task ru();
+    $display("from monitor");
+    forever begin
+      @(vif.cb);
+
+      tr     = new();
+      tr.din = vif.cb.din;
+      tr.w   = vif.cb.w;
+      tr.r   = vif.cb.r;
+      
+      #1;
+      tr.d   = fifo_tb.intf.d;
+
+      $display("MONITOR: din=%0d,w=%0b,r=%0b,d=%0d", tr.din, tr.w, tr.r, tr.d);
+      mts.put(tr);
+    end
+  endtask
+endclass
+    class scoreboard;
+  transaction tr;
+  mailbox mts;
+  bit [7:0] q[$];
+  bit [7:0] exp;
+
+  function new(mailbox mts);
+    this.mts = mts;
+  endfunction
+
+  task ru();
+    $display("from scoreboard");
+    forever begin
+      mts.get(tr);
+
+      if (tr.w && !tr.r) begin
+        if (q.size() < 8) begin
+          q.push_back(tr.din);
+          $display("SCOREBOARD: WRITE %0d", tr.din);
+        end
+      end
+      else if (tr.r && !tr.w) begin
+        if (q.size() > 0) begin
+          exp = q.pop_front();
+          if (tr.d == exp)
+            $display("SCOREBOARD: READ expected=%0d actual=%0d\nPASS", exp, tr.d);
+          else
+            $display("SCOREBOARD: READ expected=%0d actual=%0d\nFAIL", exp, tr.d);
+        end else 
+          $display("SCOREBOARD: READ attempted while reference FIFO is EMPTY");
+      end
+      else if (tr.w && tr.r) begin
+        if (q.size() > 0) begin
+          exp = q.pop_front();
+          if (tr.d == exp)
+            $display("SCOREBOARD: READ expected=%0d actual=%0d\nPASS", exp, tr.d);
+          else
+            $display("SCOREBOARD: READ expected=%0d actual=%0d\nFAIL", exp, tr.d);
+        end
+        q.push_back(tr.din);
+        $display("SCOREBOARD: WRITE %0d", tr.din);
+      end
+      else begin
+        $display("SCOREBOARD: No operation");
+      end
+    end
+  endtask
+endclass
+
+module fifo_tb;
+  bit clk;
+  always #5 clk = ~clk;
+
+  fifo_if intf(clk);
+
+  fifo dut(
+    .clk   (intf.clk),
+    .rst   (intf.rst),
+    .din   (intf.din),
+    .w     (intf.w),
+    .r     (intf.r),
+    .d     (intf.d),
+    .full  (intf.full),
+    .empty (intf.empty)
+  );
+
+  mailbox gtd = new();
+  mailbox mts = new();
+
+  generator  gen = new(gtd);
+  driver     drv = new(gtd, intf.TB);
+  monitor    mon = new(mts, intf.TB);
+  scoreboard scb = new(mts);
+
+  initial begin
+    intf.rst = 1;
+    #20;
+    intf.rst = 0;
+
+    fork
+      gen.ru();
+      drv.ru();
+      mon.ru();
+      scb.ru();
+    join_any
+
+    #100;
+    $finish;
+  end
+endmodule
