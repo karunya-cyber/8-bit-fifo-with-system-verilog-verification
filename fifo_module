@@ -1,0 +1,45 @@
+module fifo (
+    input            clk,
+    input            rst,
+    input      [7:0] din,
+    input            w,
+    input            r,
+    output reg [7:0] d,
+    output           full,
+    output           empty
+);
+    reg [7:0] mem [0:7];
+    reg [2:0] wp;
+    reg [2:0] rp;
+    reg [3:0] count;
+
+    assign full  = (count == 4'd8);
+    assign empty = (count == 4'd0);
+
+    always @(posedge clk) begin
+        if (rst) begin
+            wp    <= 3'd0;
+            rp    <= 3'd0;
+            count <= 4'd0;
+            d     <= 8'd0;
+        end else begin
+            if (w && !full) begin
+                mem[wp] <= din;
+                wp      <= wp + 1'b1;
+                $display("FIFO WRITE: din=%0d wp=%0d", din, wp);
+            end
+
+            if (r && !empty) begin
+                d  <= mem[rp];
+                rp <= rp + 1'b1;
+                $display("FIFO READ: rp=%0d d=%0d", rp, mem[rp]);
+            end
+
+            case ({w && !full, r && !empty})
+                1'b0: count <= count + 1'b1;
+                'b1: count <= count - 1'b1;
+                default: count <= count;
+            endcase
+        end
+    end
+endmodule
